@@ -16,9 +16,11 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.models.flow_matching import FlowMatchingModel
+from src.models.unet import FlowMatchingUNet
 from src.data.mnist_dataset import get_flow_dataloader
 from src.utils.flow_utils import CFMSchedule, train_flow_matching_epoch
 from src.utils.path_utils import get_checkpoint_path
+from src.utils import set_seed
 
 
 def main():
@@ -39,7 +41,16 @@ def main():
                         help='Save checkpoint every N epochs')
     parser.add_argument('--patience', type=int, default=10,
                         help='Early stopping patience')
+    parser.add_argument('--model', type=str, default='unet',
+                        choices=['unet', 'original'],
+                        help='Model architecture (unet=lightweight, original=encoder-decoder)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility')
     args = parser.parse_args()
+
+    # Set seed for reproducibility
+    set_seed(args.seed)
+    print(f"Random seed: {args.seed}")
 
     # Device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -57,7 +68,13 @@ def main():
         print(f"Transform type: {args.transform_type}")
 
     # Model
-    model = FlowMatchingModel().to(device)
+    if args.model == 'unet':
+        model = FlowMatchingUNet().to(device)
+        print(f"Using FlowMatchingUNet (lightweight U-Net)")
+    else:
+        model = FlowMatchingModel().to(device)
+        print(f"Using FlowMatchingModel (original encoder-decoder)")
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     schedule = CFMSchedule()
 
@@ -69,7 +86,7 @@ def main():
 
     for epoch in range(args.epochs):
         avg_loss = train_flow_matching_epoch(
-            model, dataloader, optimizer, schedule, device
+            model, dataloader, optimizer, schedule, device, modality=args.modality
         )
 
         print(f"Epoch {epoch+1}/{args.epochs} - Loss: {avg_loss:.4f}")

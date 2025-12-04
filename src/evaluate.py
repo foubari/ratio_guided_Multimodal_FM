@@ -6,7 +6,7 @@ Metrics:
 2. Marginal quality: Accuracy on x and y separately
 
 Usage:
-    python src/evaluate.py --transform_type rotate90 --guidance_methods none grad_log_ratio --guidance_strengths 0.0 1.0 2.0 --num_samples 1000
+    python src/evaluate.py --transform_type rotate90 --guidance_methods none mc_feng --guidance_strengths 0.0 0.5 1.0 --num_samples 500
 """
 import argparse
 import torch
@@ -19,28 +19,66 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.models.classifier import MNISTClassifier
 from src.models.flow_matching import FlowMatchingModel
+from src.models.unet import FlowMatchingUNet
 from src.models.ratio_estimator import RatioEstimator
+from src.data.mnist_dataset import get_flow_dataloader
 from src.utils.flow_utils import sample_bimodal_guided
 from src.utils.path_utils import get_checkpoint_path
+from src.utils import set_seed
+import torchvision.transforms.functional as TF
 
 
-def evaluate_coherence(samples_x, samples_y, classifier, device):
+def get_inverse_transform(transform_type):
+    """
+    Get the inverse transformation function.
+    
+    Args:
+        transform_type: Type of transformation applied to y
+        
+    Returns:
+        Function that inverts the transformation
+    """
+    if transform_type == 'rotate90':
+        return lambda img: TF.rotate(img, 90)  # -90 inverse is +90
+    elif transform_type == 'rotate180':
+        return lambda img: TF.rotate(img, 180)  # 180 inverse is 180
+    elif transform_type == 'rotate270':
+        return lambda img: TF.rotate(img, -90)  # +90 inverse is -90
+    elif transform_type == 'invert':
+        return lambda img: -img  # For normalized [-1,1], invert is just negate... actually need 1-img in [0,1]
+    elif transform_type == 'flip_h':
+        return lambda img: TF.hflip(img)
+    elif transform_type == 'flip_v':
+        return lambda img: TF.vflip(img)
+    else:
+        return lambda img: img  # No transform
+
+
+def evaluate_coherence(samples_x, samples_y, classifier, device, transform_type='rotate90'):
     """
     Compute coherence metrics.
+    
+    IMPORTANT: Applies inverse transform to y before classification,
+    so the classifier sees both x and y in the same orientation.
 
     Args:
         samples_x, samples_y: [N, 1, 28, 28]
         classifier: MNIST classifier
         device: device
+        transform_type: Type of transformation applied to y
 
     Returns:
         dict with coherence_acc, pred_x, pred_y
     """
     classifier.eval()
+    
+    # Apply inverse transform to y so classifier can recognize it
+    inverse_transform = get_inverse_transform(transform_type)
+    samples_y_inv = inverse_transform(samples_y)
 
     with torch.no_grad():
         logits_x = classifier(samples_x.to(device))
-        logits_y = classifier(samples_y.to(device))
+        logits_y = classifier(samples_y_inv.to(device))
 
     pred_x = logits_x.argmax(dim=1).cpu().numpy()
     pred_y = logits_y.argmax(dim=1).cpu().numpy()
@@ -57,19 +95,30 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate guided sampling')
     parser.add_argument('--transform_type', type=str, default='rotate90',
                         help='Transformation type')
-    parser.add_argument('--guidance_methods', nargs='+', default=['none', 'grad_log_ratio'],
+    parser.add_argument('--guidance_methods', nargs='+', default=['none', 'mc_feng'],
                         help='Guidance methods to evaluate')
-    parser.add_argument('--guidance_strengths', nargs='+', type=float, default=[0.0, 1.0, 2.0],
-                        help='Guidance strengths (gamma)')
+    parser.add_argument('--guidance_strengths', nargs='+', type=float, default=[0.0, 0.5, 1.0],
+                        help='Guidance strengths (0=independent, 1=full guidance)')
+    parser.add_argument('--mc_batch_size', type=int, default=256,
+                        help='Number of MC samples for guidance')
     parser.add_argument('--loss_type', type=str, default='disc',
                         help='Loss type for ratio estimator')
-    parser.add_argument('--num_samples', type=int, default=1000,
+    parser.add_argument('--num_samples', type=int, default=500,
                         help='Number of samples per configuration')
     parser.add_argument('--num_steps', type=int, default=100,
                         help='ODE integration steps')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device (cuda/cpu)')
+    parser.add_argument('--model', type=str, default='unet',
+                        choices=['unet', 'original'],
+                        help='Model architecture')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility')
     args = parser.parse_args()
+
+    # Set seed for reproducibility
+    set_seed(args.seed)
+    print(f"Random seed: {args.seed}")
 
     # Device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -90,8 +139,12 @@ def main():
 
     # Load FM models
     print("Loading FM models...")
-    fm_x = FlowMatchingModel().to(device)
-    fm_y = FlowMatchingModel().to(device)
+    if args.model == 'unet':
+        fm_x = FlowMatchingUNet().to(device)
+        fm_y = FlowMatchingUNet().to(device)
+    else:
+        fm_x = FlowMatchingModel().to(device)
+        fm_y = FlowMatchingModel().to(device)
 
     path_x = get_checkpoint_path('flow', 'x', None, 'best')
     path_y = get_checkpoint_path('flow', 'y', args.transform_type, 'best')
@@ -105,6 +158,13 @@ def main():
     fm_x.load_state_dict(torch.load(path_x, map_location=device))
     fm_y.load_state_dict(torch.load(path_y, map_location=device))
     print(f"  Loaded FM_x and FM_y")
+
+    # Load data loader for MC guidance
+    data_loader = get_flow_dataloader(
+        transform_type=args.transform_type,
+        batch_size=args.mc_batch_size,
+        train=True
+    )
 
     # Evaluate all configurations
     results = []
@@ -142,12 +202,14 @@ def main():
                 guidance_strength=strength,
                 num_samples=args.num_samples,
                 num_steps=args.num_steps,
-                device=device
+                device=device,
+                data_loader=data_loader if method == 'mc_feng' else None,
+                mc_batch_size=args.mc_batch_size
             )
 
             # Evaluate
             print(f"  Evaluating coherence...")
-            metrics = evaluate_coherence(samples_x, samples_y, classifier, device)
+            metrics = evaluate_coherence(samples_x, samples_y, classifier, device, args.transform_type)
 
             result = {
                 'method': method,

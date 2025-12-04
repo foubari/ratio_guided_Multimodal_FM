@@ -17,6 +17,7 @@ from src.data.mnist_dataset import get_ratio_dataloader
 from src.utils.losses import get_ratio_loss
 from src.utils.trainer import RatioTrainer
 from src.utils.path_utils import get_checkpoint_path
+from src.utils import set_seed
 
 
 def main():
@@ -42,7 +43,13 @@ def main():
                         help='RuLSIF alpha parameter')
     parser.add_argument('--lambda_penalty', type=float, default=0.1,
                         help='RuLSIF lambda penalty')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility')
     args = parser.parse_args()
+
+    # Set seed for reproducibility
+    set_seed(args.seed)
+    print(f"Random seed: {args.seed}")
 
     # Device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
