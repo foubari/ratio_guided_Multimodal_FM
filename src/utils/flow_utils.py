@@ -184,7 +184,6 @@ def sample_bimodal_guided(
     num_samples=16,
     num_steps=100,
     device='cuda',
-    data_loader=None,  # Required for MC guidance
     mc_batch_size=64,  # Number of MC samples per step
 ):
     """
@@ -195,7 +194,7 @@ def sample_bimodal_guided(
 
     Guided (guidance_method='mc_feng'):
         Monte Carlo guidance following Feng et al. Algorithm 2.
-        Uses samples from the dataset to estimate the guidance term.
+        Uses GENERATED samples from the flows (not dataset!) to estimate the guidance term.
 
     Args:
         fm_x: FlowMatchingModel for modality x
@@ -206,7 +205,6 @@ def sample_bimodal_guided(
         num_samples: Number of pairs to generate
         num_steps: Number of ODE integration steps
         device: 'cuda' or 'cpu'
-        data_loader: DataLoader with joint (x, y) pairs (required for mc_feng)
         mc_batch_size: Number of MC samples for guidance estimation
 
     Returns:
@@ -230,24 +228,28 @@ def sample_bimodal_guided(
     mc_y1_samples = None
     mc_ratios = None
     
-    if guidance_method == 'mc_feng' and data_loader is not None and ratio_estimator is not None:
-        print(f"  Loading {mc_batch_size} MC samples from dataset...")
-        # Get MC samples from data loader
-        data_iter = iter(data_loader)
-        mc_samples_list_x = []
-        mc_samples_list_y = []
+    if guidance_method == 'mc_feng' and ratio_estimator is not None:
+        print(f"  Generating {mc_batch_size} independent MC samples from flows...")
         
-        while len(mc_samples_list_x) < mc_batch_size:
-            try:
-                batch = next(data_iter)
-            except StopIteration:
-                data_iter = iter(data_loader)
-                batch = next(data_iter)
-            mc_samples_list_x.append(batch['x'])
-            mc_samples_list_y.append(batch['y'])
+        # Generate x samples from FM_x
+        mc_x1_samples = torch.randn(mc_batch_size, 1, 28, 28, device=device)
+        for s in range(num_steps):
+            t_mc = s * dt
+            t_mc_batch = torch.full((mc_batch_size,), t_mc, device=device)
+            with torch.no_grad():
+                v = fm_x(mc_x1_samples, t_mc_batch)
+            mc_x1_samples = mc_x1_samples + v * dt
         
-        mc_x1_samples = torch.cat(mc_samples_list_x, dim=0)[:mc_batch_size].to(device)  # [N_mc, 1, 28, 28]
-        mc_y1_samples = torch.cat(mc_samples_list_y, dim=0)[:mc_batch_size].to(device)  # [N_mc, 1, 28, 28]
+        # Generate y samples from FM_y
+        mc_y1_samples = torch.randn(mc_batch_size, 1, 28, 28, device=device)
+        for s in range(num_steps):
+            t_mc = s * dt
+            t_mc_batch = torch.full((mc_batch_size,), t_mc, device=device)
+            with torch.no_grad():
+                v = fm_y(mc_y1_samples, t_mc_batch)
+            mc_y1_samples = mc_y1_samples + v * dt
+        
+        print(f"  Generated MC samples: x shape={mc_x1_samples.shape}, y shape={mc_y1_samples.shape}")
         
         # Pre-compute ratios r_1(x_1^(i), y_1^(i)) for all MC samples
         with torch.no_grad():

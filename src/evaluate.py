@@ -21,7 +21,6 @@ from src.models.classifier import MNISTClassifier
 from src.models.flow_matching import FlowMatchingModel
 from src.models.unet import FlowMatchingUNet
 from src.models.ratio_estimator import RatioEstimator
-from src.data.mnist_dataset import get_flow_dataloader
 from src.utils.flow_utils import sample_bimodal_guided
 from src.utils.path_utils import get_checkpoint_path
 from src.utils import set_seed
@@ -159,13 +158,6 @@ def main():
     fm_y.load_state_dict(torch.load(path_y, map_location=device))
     print(f"  Loaded FM_x and FM_y")
 
-    # Load data loader for MC guidance
-    data_loader = get_flow_dataloader(
-        transform_type=args.transform_type,
-        batch_size=args.mc_batch_size,
-        train=True
-    )
-
     # Evaluate all configurations
     results = []
 
@@ -203,7 +195,6 @@ def main():
                 num_samples=args.num_samples,
                 num_steps=args.num_steps,
                 device=device,
-                data_loader=data_loader if method == 'mc_feng' else None,
                 mc_batch_size=args.mc_batch_size
             )
 

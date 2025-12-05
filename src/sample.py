@@ -187,16 +187,6 @@ def main():
         ratio_estimator.load_state_dict(torch.load(path_ratio, map_location=device))
         print(f"  Loaded ratio estimator from: {path_ratio}")
 
-    # Load data loader for MC guidance
-    data_loader = None
-    if args.guidance_method == 'mc_feng':
-        print("Loading dataset for MC guidance...")
-        data_loader = get_flow_dataloader(
-            transform_type=args.transform_type,
-            batch_size=args.mc_batch_size,
-            train=True
-        )
-
     # Sample
     print(f"\nSampling {args.num_samples} pairs...")
     print(f"  Guidance method: {args.guidance_method}")
@@ -214,7 +204,6 @@ def main():
         num_samples=args.num_samples,
         num_steps=args.num_steps,
         device=device,
-        data_loader=data_loader,
         mc_batch_size=args.mc_batch_size
     )
 
